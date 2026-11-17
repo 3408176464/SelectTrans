@@ -55,7 +55,7 @@ ISCC.exe SelectTrans.iss   # 产出 dist/SelectTransSetup.exe
 
 ## 实现说明
 
-- 翻译引擎：有道 webfanyi（主，含词典释义）→ MyMemory（备）→ 术语词库
+- 翻译引擎：webfanyi（主，含词典释义）→ MyMemory（备）→ 术语词库
 - 弹窗为 PySide6 自绘（圆角/阴影/渐入），取词走「模拟 Ctrl+C + 剪贴板还原」
 - 高 DPI 下鼠标物理坐标需换算为 Qt 逻辑坐标（坑记录在案）
 
