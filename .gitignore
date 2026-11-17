@@ -1,0 +1,12 @@
+# 构建产物
+dist/
+build_tmp/
+__pycache__/
+*.pyc
+
+# 离线模型（体积大，build.py 会提示下载来源；仅随安装包分发）
+offline_models/
+
+# 截图/临时
+_shots/
+*.log
