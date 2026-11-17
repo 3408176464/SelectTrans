@@ -13,7 +13,7 @@
 
 ## 安装
 
-下载 [Releases](../../releases) 中的 `SelectTransSetup.exe`，双击安装：
+下载 [Releases](../../releases) 中的 `SelectTransSetup.exe`，双击安装： 
 
 - 可选择安装位置
 - 可选：开机自启 / 最小化到托盘 / 桌面快捷方式
