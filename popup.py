@@ -10,8 +10,8 @@ from PySide6.QtCore import (QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt,
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QLinearGradient,
                            QPainter, QPainterPath, QPen)
 from PySide6.QtWidgets import (QApplication, QGraphicsDropShadowEffect,
-                               QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout,
-                               QWidget)
+                               QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
+                               QVBoxLayout, QWidget)
 
 FONT = "Microsoft YaHei UI"
 
@@ -159,19 +159,16 @@ class CardWindow(QWidget):
         self.src_lbl.setStyleSheet(f"color: {C_SUB.name()}; background: transparent;")
         self.src_lbl.setWordWrap(True)
         self.src_lbl.setFixedWidth(CARD_W - PAD * 2)
-        body.addWidget(self.src_lbl)
 
         hair = QWidget()
         hair.setFixedHeight(1)
         hair.setStyleSheet(f"background: rgba(255,255,255,10); border: none;")
-        body.addWidget(hair)
 
         self.dst_lbl = QLabel("")
         self.dst_lbl.setFont(_font(13, QFont.Weight.Medium))
         self.dst_lbl.setStyleSheet(f"color: {C_TEXT.name()}; background: transparent;")
         self.dst_lbl.setWordWrap(True)
         self.dst_lbl.setFixedWidth(CARD_W - PAD * 2)
-        body.addWidget(self.dst_lbl)
 
         self.note_lbl = QLabel("")
         self.note_lbl.setFont(_font(9.5))
@@ -179,7 +176,32 @@ class CardWindow(QWidget):
         self.note_lbl.setWordWrap(True)
         self.note_lbl.setFixedWidth(CARD_W - PAD * 2)
         self.note_lbl.hide()
-        body.addWidget(self.note_lbl)
+
+        # 正文区：长文时高度封顶、滚轮浏览（按钮行钉在卡片底部）
+        self.scroll = QScrollArea()
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll.setStyleSheet(
+            "QScrollArea{background: transparent; border: none;}"
+            "QScrollArea QWidget{background: transparent;}"
+            "QScrollBar:vertical{background: transparent; width: 6px; margin: 0;}"
+            "QScrollBar::handle:vertical{background: rgba(255,255,255,42); border-radius: 3px; min-height: 28px;}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical{height: 0;}"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical{background: transparent;}"
+        )
+        self.body_w = QWidget()
+        self.body_w.setStyleSheet("background: transparent;")
+        scroll_lay = QVBoxLayout(self.body_w)
+        scroll_lay.setContentsMargins(0, 0, 7, 0)  # 给滚动条留位
+        scroll_lay.setSpacing(8)
+        scroll_lay.addWidget(self.src_lbl)
+        scroll_lay.addWidget(hair)
+        scroll_lay.addWidget(self.dst_lbl)
+        scroll_lay.addWidget(self.note_lbl)
+        self.scroll.setWidget(self.body_w)
+        body.addWidget(self.scroll, 1)
 
         foot = QHBoxLayout()
         foot.setContentsMargins(0, 4, 0, 0)
@@ -252,7 +274,7 @@ class CardWindow(QWidget):
         return max(fm.horizontalAdvance(line) for line in text.splitlines())
 
     def _fit(self):
-        """按内容自适应宽高：短句收窄，长文封顶换行。"""
+        """按内容自适应宽高：短句收窄，长文封顶、正文区可滚轮浏览。"""
         src = self.src_lbl.text()
         dst_on = self.dst_lbl.isVisibleTo(self.card)
         note_on = self.note_lbl.isVisibleTo(self.card)
@@ -273,17 +295,28 @@ class CardWindow(QWidget):
         self.note_lbl.setFixedWidth(inner)
 
         gaps = 8
-        h = 15 + 14  # 卡片上下内边距
-        h += self._head_lay.sizeHint().height()
-        h += self.src_lbl.heightForWidth(inner) if src else 0
-        h += 1  # 发丝线
+        content_h = 0
+        content_h += self.src_lbl.heightForWidth(inner) if src else 0
+        content_h += 1  # 发丝线
         if dst_on:
-            h += self.dst_lbl.heightForWidth(inner)
+            content_h += self.dst_lbl.heightForWidth(inner)
         if note_on:
-            h += self.note_lbl.heightForWidth(inner)
-        h += self._foot_lay.sizeHint().height()
-        h += 4 * gaps  # 5 个条目之间的间距
-        self.setFixedSize(inner + PAD * 2 + SHADOW * 2, int(h) + SHADOW * 2)
+            content_h += self.note_lbl.heightForWidth(inner)
+        content_h += 3 * gaps  # 正文条目间距
+
+        # 卡片整体高度不超过屏幕可用高度的 50%，超出部分滚轮浏览
+        screen = self.screen() or QApplication.primaryScreen()
+        max_h = int(screen.availableGeometry().height() * 0.5)
+        chrome = 15 + 14 + self._head_lay.sizeHint().height() \
+            + self._foot_lay.sizeHint().height() + 2 * gaps + SHADOW * 2
+        scroll_h = int(min(content_h, max(140, max_h - chrome)))
+
+        self.body_w.setFixedWidth(inner)
+        self.body_w.setFixedHeight(int(content_h))
+        self.scroll.setFixedWidth(inner)
+        self.scroll.setFixedHeight(scroll_h)
+        self.scroll.verticalScrollBar().setValue(0)  # 新内容回到顶部
+        self.setFixedSize(inner + PAD * 2 + SHADOW * 2, scroll_h + chrome)
 
     def _place(self, x: int, y: int):
         screen = self.screen() or QApplication.primaryScreen()
