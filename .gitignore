@@ -1,0 +1,9 @@
+# 构建产物
+dist/
+build_tmp/
+__pycache__/
+*.pyc
+
+# 截图/临时
+_shots/
+*.log
