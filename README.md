@@ -31,7 +31,7 @@
 
 ## 词库扩充
 
-编辑 exe 同目录的 `glossary.json`（普通 JSON，`英文: 中文`），保存即生效：
+编辑 exe 同目录的 `glossary.json`（普通 JSON，`英文: 中文`），保存即生效： 
 
 ```json
 {
