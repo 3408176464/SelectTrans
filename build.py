@@ -32,11 +32,26 @@ def make_icon() -> None:
 def build() -> None:
     make_icon()
     import shutil
+    import zipfile
     import glossary
     gj = HERE / "glossary.json"
     if not gj.exists():  # 已有合并词库则保留，勿用内置表覆盖
         glossary.dump_default_json(gj)
     print("[glossary] glossary.json ok")
+
+    # 离线模型：从 .argosmodel 解包（若尚未解包）
+    mt_dir = HERE / "offline_models" / "en_zh"
+    if not (mt_dir / "model" / "model.bin").exists():
+        src = HERE / "offline_models" / "translate-en_zh.argosmodel"
+        if not src.exists():
+            raise SystemExit(f"缺少离线模型：{src}（可从 HF shethjenil/argostranslate 下载 translate-en_zh.argosmodel）")
+        tmp = HERE / "offline_models" / "_tmp"
+        with zipfile.ZipFile(src) as z:
+            z.extractall(tmp)
+        (tmp / "translate-en_zh-1_9").rename(mt_dir)
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("[offline-mt] en_zh model ok")
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--noconsole", "--onedir", "-y",
@@ -45,6 +60,11 @@ def build() -> None:
         "--distpath", str(HERE / "dist"),
         "--workpath", str(HERE / "build_tmp"),
         "--specpath", str(HERE / "build_tmp"),
+        "--add-data", f"{mt_dir};offline_models/en_zh",
+        "--exclude-module", "torch",
+        "--exclude-module", "spacy",
+        "--exclude-module", "stanza",
+        "--exclude-module", "argostranslate",
         str(HERE / "main.py"),
     ]
     print("[build]", " ".join(cmd))

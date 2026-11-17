@@ -277,6 +277,11 @@ class App:
         self._ticks = getattr(self, "_ticks", 0) + 1
         if self._ticks == 30 or self._ticks % 600 == 0:  # 启动 3s 后 + 每分钟
             trim_working_set()
+            try:
+                import offline_mt
+                offline_mt.maybe_unload_idle()  # 离线模型闲置 5 分钟自动卸载
+            except Exception:
+                pass
         self.popup.after(POLL_MS, self.poll)
 
     def _handle(self, kind, *args):

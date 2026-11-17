@@ -51,6 +51,8 @@ python build.py            # 产出 dist/SelectTrans/（文件夹版）
 ISCC.exe SelectTrans.iss   # 产出 dist/SelectTransSetup.exe
 ```
 
+> 离线翻译模型（`offline_models/translate-en_zh.argosmodel`，约 70MB）不入库；构建时缺失会提示下载来源（HuggingFace `shethjenil/argostranslate`），解包后 build.py 自动打进安装包。
+
 ## 实现说明
 
 - 翻译引擎：有道 webfanyi（主，含词典释义）→ MyMemory（备）→ 术语词库

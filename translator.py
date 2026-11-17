@@ -15,6 +15,7 @@ import requests
 from Crypto.Cipher import AES
 
 import glossary
+import offline_mt
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -94,12 +95,12 @@ def _youdao_bootstrap(force: bool = False) -> None:
         return
     s = requests.Session()
     s.headers.update({"User-Agent": UA, "Referer": "https://fanyi.youdao.com/"})
-    host_html = s.get("https://fanyi.youdao.com", timeout=10).text
-    s.get("https://dict.youdao.com/login/acc/query/accountinfo", timeout=10)
+    host_html = s.get("https://fanyi.youdao.com", timeout=3).text
+    s.get("https://dict.youdao.com/login/acc/query/accountinfo", timeout=3)
     m = re.search(r"https://shared\.ydstatic\.com/dict/translation-website/[^/]+/js/app\.[^\.]+\.js", host_html)
     if not m:
         raise TranslateError("有道页面结构变化，未找到 JS")
-    js_html = s.get(m.group(), timeout=10).text
+    js_html = s.get(m.group(), timeout=3).text
     mk = re.search(r'decodeKey:"(.*?)",', js_html)
     mi = re.search(r'decodeIv:"(.*?)",', js_html)
     md = re.search(r'="webfanyi-key-getter-2025",(\w+)="(\w+)";', js_html)
@@ -108,7 +109,7 @@ def _youdao_bootstrap(force: bool = False) -> None:
     decode_key, decode_iv, default_key = mk.group(1), mi.group(1), md.group(2)
     ts = int(time.time() * 1000)
     params = _base_payload("webfanyi-key-getter-2025", default_key, ts)
-    kr = s.get("https://dict.youdao.com/webtranslate/key", params=params, timeout=10)
+    kr = s.get("https://dict.youdao.com/webtranslate/key", params=params, timeout=3)
     kr.raise_for_status()
     keys = kr.json().get("data") or {}
     st.update({
@@ -148,7 +149,7 @@ def translate_youdao(text: str):
     ts = int(time.time() * 1000)
     form = {"i": text, "from": "auto", "to": "", "dictResult": "true", "useTerm": "false"}
     payload = _base_payload("webfanyi", st["secret"], ts, **form)
-    r = st["session"].post("https://dict.youdao.com/webtranslate", data=payload, timeout=10)
+    r = st["session"].post("https://dict.youdao.com/webtranslate", data=payload, timeout=3)
     r.raise_for_status()
     try:
         data = _aes_decrypt(r.text, st["aes_key"], st["aes_iv"])
@@ -158,7 +159,7 @@ def translate_youdao(text: str):
         st = _youdao_state
         ts = int(time.time() * 1000)
         payload = _base_payload("webfanyi", st["secret"], ts, **form)
-        r = st["session"].post("https://dict.youdao.com/webtranslate", data=payload, timeout=10)
+        r = st["session"].post("https://dict.youdao.com/webtranslate", data=payload, timeout=3)
         r.raise_for_status()
         try:
             data = _aes_decrypt(r.text, st["aes_key"], st["aes_iv"])
@@ -186,7 +187,7 @@ def translate_mymemory(text: str):
     r = _session.get(
         "https://api.mymemory.translated.net/get",
         params={"q": text[:480], "langpair": pair},
-        timeout=10,
+        timeout=3,
     )
     r.raise_for_status()
     data = r.json()
@@ -198,12 +199,40 @@ def translate_mymemory(text: str):
     return out, ""
 
 
+def translate_offline(text: str):
+    """离线兜底（仅英译中）。返回 (译文, 附注)。"""
+    if is_chinese(text):
+        raise TranslateError("离线模型仅支持英译中")
+    try:
+        return offline_mt.translate_en_zh(text), "离线翻译（本地模型）"
+    except RuntimeError as e:
+        raise TranslateError(str(e))
+
+
 ENGINES = (
     ("有道", translate_youdao),
     ("MyMemory", translate_mymemory),
+    ("离线", translate_offline),
 )
 
 MAX_LEN = 2000
+
+# 网络保险丝：在线引擎出现网络故障后 45 秒内直接走离线，
+# 避免「半死不活」的网络每次都让两个在线引擎各超时一遍（体感 5 秒+）。
+_NET = {"down_until": 0.0}
+NET_COOLDOWN_S = 45.0
+
+
+def _net_dead() -> bool:
+    return time.time() < _NET["down_until"]
+
+
+def _net_down() -> None:
+    _NET["down_until"] = time.time() + NET_COOLDOWN_S
+
+
+def _net_ok() -> None:
+    _NET["down_until"] = 0.0
 
 
 def translate(text: str):
@@ -224,15 +253,31 @@ def translate(text: str):
         return g, "术语词库", "来自术语词库 · glossary.json 可自行扩充"
 
     errors = []
+    net_fail = 0
+    attempted = 0
     for name, fn in ENGINES:
+        if name != "离线" and _net_dead():
+            continue  # 保险丝生效：跳过在线引擎
+        attempted += 1
         try:
             dst, note = fn(text)
+            if name != "离线":
+                # 在线成功 → 本地模型立即卸载（联网即卸载策略）
+                offline_mt.unload()
+                _net_ok()
             if g and " ".join(dst.split()).casefold() == " ".join(text.split()).casefold():
                 # 单词引擎原样返回 → 词库兜底（noconsole 这类）
                 return g, "术语词库", "来自术语词库 · glossary.json 可自行扩充"
             return dst, name, note
         except TranslateError as e:
             errors.append(f"{name}: {e}")
-        except Exception as e:  # 网络等异常
+        except (requests.ConnectionError, requests.Timeout, OSError) as e:
+            net_fail += 1
+            errors.append(f"{name}: 网络不可用")
+            if name != "离线":
+                _net_down()  # 网络挂了，后面的在线引擎不必再试
+        except Exception as e:  # 其他异常
             errors.append(f"{name}: {type(e).__name__}: {e}")
+    if net_fail and net_fail == attempted:
+        raise TranslateError("离线中：整句翻译需联网，术语短语可查本地词库")
     raise TranslateError("；".join(errors))

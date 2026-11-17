@@ -2729,5 +2729,8 @@
   "pentium": "Intel公司生产的CPU芯片；中文译名为\"奔腾\"",
   "kilo": "pref. 表示“千” abbr. 千克",
   "giga": "pref. 千兆",
-  "bracketed": "方括号；托架；括号"
+  "bracketed": "方括号；托架；括号",
+  "SelectTrans": "划词翻译",
+  "SelectTransSetup": "划词翻译",
+  "SelectTrans.iss": "划词翻译的 Inno Setup 安装脚本"
 }
