@@ -38,7 +38,8 @@ HOTKEY_QUIT = "<ctrl>+<alt>+q"
 DRAG_PX = 6          # 超过该像素位移视为拖选
 DOUBLE_CLICK_S = 0.45  # 双击/三击选词判定
 DEBOUNCE_S = 0.35
-MAX_TEXT = 2000
+# 取词不再截断（长文由 translator 分段翻译）；此处仅保留定义以防外部引用
+MAX_TEXT = 60000
 POLL_MS = 100        # 事件泵频率（够用且省 CPU）
 
 
@@ -165,11 +166,16 @@ def grab_selection() -> str:
     ctrl = keyboard.Controller()
     with ctrl.pressed(keyboard.Key.ctrl):
         ctrl.tap("c")
-    time.sleep(0.18)
-    try:
-        text = pyperclip.paste() or ""
-    except Exception:
-        text = ""
+    text = ""
+    for _ in range(4):  # 超长复制可能慢，多等几次
+        time.sleep(0.18)
+        try:
+            text = pyperclip.paste() or ""
+        except Exception:
+            text = ""
+        if old_valid and text.strip() == "WB_SEL_MARKER":
+            continue  # 复制还没完成，再等
+        break
     if old_valid:
         try:
             pyperclip.copy(old)  # 还原剪贴板
@@ -177,10 +183,10 @@ def grab_selection() -> str:
             pass
     if not old_valid:
         # 原剪贴板非文本（如图片）：能读到文本即认为复制成功
-        return text.strip()[:MAX_TEXT]
+        return text.strip()
     if not text or text.strip() == "WB_SEL_MARKER":
         return ""
-    return text.strip()[:MAX_TEXT]
+    return text.strip()  # 不截断——长文由 translate() 分段处理
 
 
 class App:
@@ -188,7 +194,8 @@ class App:
         self.q: queue.Queue = queue.Queue()
         self.popup = TranslatePopup()
         self.auto = True
-        self.busy = False
+        self._epoch = 0  # 翻译任务代数：新请求即作废旧任务（抢占式取消）
+        self._grab_lock = threading.Lock()
         self.last_text = ""
         self._press_pos = None
         self._press_time = 0.0
@@ -270,24 +277,40 @@ class App:
     def poll(self):
         try:
             while True:
-                kind, *args = self.q.get_nowait()
-                self._handle(kind, *args)
-        except queue.Empty:
-            pass
-        self._ticks = getattr(self, "_ticks", 0) + 1
-        if self._ticks == 30 or self._ticks % 600 == 0:  # 启动 3s 后 + 每分钟
-            trim_working_set()
-            try:
-                import offline_mt
-                offline_mt.maybe_unload_idle()  # 离线模型闲置 5 分钟自动卸载
-            except Exception:
-                pass
-        self.popup.after(POLL_MS, self.poll)
+                try:
+                    kind, *args = self.q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._handle(kind, *args)
+                except Exception:
+                    # 单个事件崩溃绝不能拖死整个泵：记日志后继续派发
+                    import traceback
+                    try:
+                        with open(os.path.join(tempfile.gettempdir(),
+                                               "select_trans_error.log"),
+                                  "a", encoding="utf-8") as f:
+                            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                                    f" [event: {kind}] =====\n")
+                            traceback.print_exc(file=f)
+                    except Exception:
+                        pass
+        finally:
+            self._ticks = getattr(self, "_ticks", 0) + 1
+            if self._ticks == 30 or self._ticks % 600 == 0:  # 启动 3s 后 + 每分钟
+                trim_working_set()
+                try:
+                    import offline_mt
+                    offline_mt.maybe_unload_idle()  # 离线模型闲置 5 分钟自动卸载
+                except Exception:
+                    pass
+            self.popup.after(POLL_MS, self.poll)  # 永远续命，泵不能停
 
     def _handle(self, kind, *args):
         if kind == "outside":
             x, y = args
-            if self.popup.visible and not self.popup.contains(x, y):
+            if (self.popup.visible and not self.popup.pinned
+                    and not self.popup.contains(x, y)):
                 self.popup.hide()
                 trim_working_set()
         elif kind == "select":
@@ -304,33 +327,33 @@ class App:
 
     # ---------------- 翻译流程 ----------------
     def request_translate(self, x, y, force=False):
-        if self.busy:
-            return
         now = time.time()
         if not force and now - self._last_trigger < DEBOUNCE_S:
             return
         self._last_trigger = now
-        threading.Thread(target=self._worker, args=(x, y), daemon=True).start()
+        self._epoch += 1  # 作废所有在途任务
+        threading.Thread(target=self._worker,
+                         args=(x, y, self._epoch), daemon=True).start()
 
-    def _worker(self, x, y):
-        self.busy = True
-        try:
+    def _worker(self, x, y, epoch):
+        with self._grab_lock:
             text = grab_selection()
-            if not text:
-                return
-            if text == self.last_text and self.popup.visible:
-                return
-            self.last_text = text
-            direction = detect_direction(text)
-            self.q.put(("loading", text, x, y, direction))
-            try:
-                dst, engine, note = translate(text)
-            except TranslateError as e:
+        if not text or epoch != self._epoch:
+            return
+        if text == self.last_text and self.popup.visible:
+            return
+        self.last_text = text
+        direction = detect_direction(text)
+        self.q.put(("loading", text, x, y, direction))
+        try:
+            dst, engine, note = translate(text, abort=lambda: epoch != self._epoch)
+        except TranslateError as e:
+            if epoch == self._epoch:
                 self.q.put(("show", text, f"翻译失败：{e}", "—", x, y, direction, ""))
-                return
-            self.q.put(("show", text, dst, engine, x, y, direction, note))
-        finally:
-            self.busy = False
+            return
+        if epoch != self._epoch:
+            return  # 已被新请求取代，丢弃过期结果
+        self.q.put(("show", text, dst, engine, x, y, direction, note))
 
     def set_auto(self, on: bool):
         self.auto = bool(on)

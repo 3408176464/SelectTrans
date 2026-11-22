@@ -99,17 +99,21 @@ def _post(s: str) -> str:
 
 
 def translate_en_zh(text: str) -> str:
-    """英文 → 简体中文（离线）。调用前请 ensure；失败抛 RuntimeError。"""
+    """英文 → 简体中文（离线）。调用前请 ensure；失败抛 RuntimeError。段落结构保留。"""
     if not load():
         raise RuntimeError("离线模型缺失")
     _state["last_used"] = time.time()
     sp, tr = _state["sp"], _state["tr"]
-    chunks = [c.strip() for c in _SPLIT.split(text) if c.strip()] or [text.strip()]
-    outs = []
-    for c in chunks:
-        toks = sp.encode(c, out_type=str)
-        if not toks:
-            continue
-        res = tr.translate_batch([toks], beam_size=2, max_decoding_length=256)
-        outs.append(_post(sp.decode(res[0].hypotheses[0])))
-    return _post(" ".join(o for o in outs if o))
+    paras = [p.strip() for p in text.split("\n") if p.strip()]
+    out_paras = []
+    for para in paras or [text.strip()]:
+        chunks = [c.strip() for c in _SPLIT.split(para) if c.strip()]
+        outs = []
+        for c in chunks:
+            toks = sp.encode(c, out_type=str)
+            if not toks:
+                continue
+            res = tr.translate_batch([toks], beam_size=2, max_decoding_length=256)
+            outs.append(_post(sp.decode(res[0].hypotheses[0])))
+        out_paras.append(_post(" ".join(o for o in outs if o)))
+    return "\n\n".join(p for p in out_paras if p)

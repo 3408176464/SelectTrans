@@ -221,11 +221,16 @@ MAX_CHUNK = 1200  # 单次请求长度上限，超长自动按段落/句子分�
 MAX_LEN = 60000   # 绝对上限，防止误选巨文卡死
 
 
-def _split_chunks(text: str, limit: int = MAX_CHUNK):
-    """按 段落 → 句子 → 硬切 三级策略分段，尽量不在句中断开。"""
-    def split_long(piece: str):
+def _split_units(text: str, limit: int = MAX_CHUNK):
+    """把文本切成翻译单元，保住段落结构。
+
+    返回 [(单元文本, 单元前是否硬换行)]：
+    - 段落之间是硬边界（结果用 \\n\\n 连接，与原文段落一一对应）
+    - 单个超长段在句内切开，属于软边界（结果用空格续接，不产生假分段）
+    """
+    def split_long(para: str):
         out, buf = [], ""
-        for sent in re.split(r"(?<=[.!?。！？；;])\s+", piece):
+        for sent in re.split(r"(?<=[.!?。！？；;])\s+", para):
             if not sent:
                 continue
             if len(sent) > limit:
@@ -242,24 +247,17 @@ def _split_chunks(text: str, limit: int = MAX_CHUNK):
             out.append(buf)
         return out
 
-    chunks, buf = [], ""
+    units = []
     for para in text.split("\n"):
         para = para.strip()
         if not para:
             continue
-        if len(para) > limit:
-            if buf:
-                chunks.append(buf)
-                buf = ""
-            chunks.extend(split_long(para))
-        elif len(buf) + len(para) + 1 <= limit:
-            buf = f"{buf} {para}".strip() if buf else para
+        if len(para) <= limit:
+            units.append((para, True))
         else:
-            chunks.append(buf)
-            buf = para
-    if buf:
-        chunks.append(buf)
-    return chunks or [text[:limit]]
+            for i, piece in enumerate(split_long(para)):
+                units.append((piece, i == 0))  # 段内续接 = 软边界
+    return units or [(text[:limit], True)]
 
 # 网络保险丝：在线引擎出现网络故障后 45 秒内直接走离线，
 # 避免「半死不活」的网络每次都让两个在线引擎各超时一遍（体感 5 秒+）。
@@ -279,10 +277,11 @@ def _net_ok() -> None:
     _NET["down_until"] = 0.0
 
 
-def translate(text: str):
+def translate(text: str, abort=None):
     """翻译文本，返回 (译文, 引擎名, 附注)。
 
-    顺序：术语词库 → 有道（单词走词典释义）→ MyMemory。
+    顺序：术语词库 → 有道（单词走词典释义）→ MyMemory → 离线兜底。
+    abort: 可选回调，返回 True 时中止（用于新请求抢占旧任务）。
     全部引擎失败抛 TranslateError。
     """
     text = (text or "").strip()
@@ -291,15 +290,19 @@ def translate(text: str):
     if len(text) > MAX_LEN:
         raise TranslateError("文本过长（超过 6 万字符）")
 
-    # 超长文本：分段翻译后拼接（修复长文只翻一半的问题）
-    if len(text) > MAX_CHUNK:
+    # 长文或含段落：按段落逐单元翻译，结果段落结构与原文一一对应
+    if len(text) > MAX_CHUNK or "\n" in text:
         outs, names = [], []
-        for seg in _split_chunks(text):
+        result = ""
+        for seg, hard in _split_units(text):
+            if abort and abort():
+                raise TranslateError("已切换到新的翻译")
             dst, name, _note = translate(seg)
-            outs.append(dst)
             names.append(name)
+            sep = "\n\n" if (result and hard) else (" " if result else "")
+            result += sep + dst.strip()
         name = max(set(names), key=names.count)  # 取多数派引擎
-        return "\n\n".join(o.strip() for o in outs if o.strip()), name, ""
+        return result, name, ""
 
     g = glossary.lookup(text)
     if g and len(text.split()) > 1:

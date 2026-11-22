@@ -109,6 +109,46 @@ class CloseButton(QLabel):
             self.clicked.emit()
 
 
+class PinButton(QLabel):
+    """图钉：钉住后点卡片外部不再关闭。"""
+    clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pinned = False
+        self._hover = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(24, 24)
+
+    def enterEvent(self, _e):
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, _e):
+        self._hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self.rect().contains(e.position().toPoint()):
+            self.pinned = not self.pinned
+            self.update()
+            self.clicked.emit()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.pinned:
+            color = C_ACCENT
+        else:
+            color = QColor("#A8B0C4") if self._hover else QColor("#7A8299")
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawEllipse(QRectF(7, 4, 10, 9))          # 帽
+        p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(12, 13, 12, 20)                    # 针
+        p.drawLine(8, 13, 16, 13)                     # 护肩
+
+
 class CardWindow(QWidget):
     """整卡窗口：透明底 + 阴影 + 圆角渐变卡片。"""
 
@@ -147,10 +187,12 @@ class CardWindow(QWidget):
         self.dot = QLabel("●")
         self.dot.setFont(_font(7))
         self.dot.setStyleSheet(f"color: {C_DOT.name()}; background: transparent;")
+        self.pin_btn = PinButton()
         self.close_btn = CloseButton()
         head.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addWidget(self.dir_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
+        head.addWidget(self.pin_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         body.addLayout(head)
 
@@ -217,6 +259,7 @@ class CardWindow(QWidget):
 
         self.copy_btn.clicked.connect(self._copy)
         self.close_btn.clicked.connect(self.hide)
+        self.pin_btn.clicked.connect(self._toggle_pin)
 
         self._dots = 0
         self._dot_timer = QTimer(self)
@@ -228,6 +271,13 @@ class CardWindow(QWidget):
         self._fade.setStartValue(0.0)
         self._fade.setEndValue(1.0)
         self._fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def _toggle_pin(self):
+        self.hint_lbl.setText("已固定" if self.pin_btn.pinned else "点外部关闭")
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_btn.pinned
 
     # ---------- 绘制 ----------
     def paintEvent(self, _e):
@@ -319,6 +369,8 @@ class CardWindow(QWidget):
         self.setFixedSize(inner + PAD * 2 + SHADOW * 2, scroll_h + chrome)
 
     def _place(self, x: int, y: int):
+        if self.pin_btn.pinned:
+            return  # 钉住后位置冻结：只更新内容，不再跟鼠标挪窝
         screen = self.screen() or QApplication.primaryScreen()
         area = screen.availableGeometry()
         w, h = self.width(), self.height()
@@ -417,6 +469,10 @@ class TranslatePopup:
 
     def hide(self):
         self.win.hide()
+
+    @property
+    def pinned(self) -> bool:
+        return self.win.pinned
 
     @property
     def visible(self) -> bool:
